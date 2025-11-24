@@ -1,0 +1,256 @@
+# cd/helm/helmv2-dynamic.yml
+# Contains your FULL original working logic — reused by dynamic + manual jobs
+
+.helm_image:
+  image:
+    name: ${IMAGE_REGISTRY}/ubi9/ochelm:03122024
+    entrypoint: [""]
+
+# ===================================================================
+# EXACT SAME VARIABLE DETECTION LOGIC YOU HAD (with head -1)
+# ===================================================================
+.validate_variables:
+  before_script:
+    - |
+      set -eo pipefail
+      REPO_ROOT=$(pwd)
+      echo "Repository root: $REPO_ROOT"
+      if [ -n "$CI_PIPELINE_SOURCE" ] && [ "$CI_PIPELINE_SOURCE" = "pipeline" ]; then
+        echo "This is a pipeline trigger"
+        if [ -z "$SERVICE_NAME" ] || [ -z "$ENV" ]; then
+          echo "Error: Pipeline trigger requires SERVICE_NAME and ENV variables"
+          echo "Current values:"
+          echo "SERVICE_NAME: $SERVICE_NAME"
+          echo "ENV: $ENV"
+          exit 1
+        fi
+        if [[ ! "$ENV" =~ ^(dev|sit|uat|int|perf|pre-prod|pre-prod-dc|prod-dr|prod-dc)$ ]]; then
+          echo "Error: Invalid environment '$ENV' for pipeline trigger"
+          exit 1
+        fi
+        echo "Using pipeline trigger values:"
+        echo "Service: $SERVICE_NAME"
+        echo "Environment: $ENV"
+      else
+        echo "Debug: GitLab CI Variables:"
+        echo "CI_COMMIT_SHA: $CI_COMMIT_SHA"
+        echo "CI_COMMIT_BEFORE_SHA: $CI_COMMIT_BEFORE_SHA"
+        git config --global http.sslVerify false
+        git config --global --add safe.directory '*'
+        git config --global user.name "ci"
+        git config --global user.email "ci.cedge@sbi.co.in"
+        git remote set-url origin https://gitlab-ci-token:$GIT_PAT@gitlab.epay.sbi/$CI_PROJECT_PATH.git
+        if [ -z "$CI_COMMIT_CHANGED_FILES" ]; then
+          echo "Debug: CI_COMMIT_CHANGED_FILES is empty, trying to get changed files manually..."
+          if [ -n "$CI_COMMIT_SHA" ] && [ -n "$CI_COMMIT_BEFORE_SHA" ]; then
+            CI_COMMIT_CHANGED_FILES=$(git diff --name-only "$CI_COMMIT_BEFORE_SHA" "$CI_COMMIT_SHA")
+            echo "Debug: Manually detected changed files:"
+            echo "$CI_COMMIT_CHANGED_FILES"
+          fi
+        fi
+        if [ -z "$SERVICE_NAME" ] || [ -z "$ENV" ]; then
+          if [ -n "$CI_COMMIT_CHANGED_FILES" ]; then
+            echo "Changed files: $CI_COMMIT_CHANGED_FILES"
+            changed_chart_path=$(echo "$CI_COMMIT_CHANGED_FILES" | grep -oE '(dev|sit|uat|int|perf|pre-prod|pre-prod-dc|prod-dr|prod-dc)/charts/[^/]+' | head -1)
+            if [ -n "$changed_chart_path" ]; then
+              echo "Found changed chart path: $changed_chart_path"
+              detected_env=$(echo "$changed_chart_path" | cut -d'/' -f1)
+              detected_service=$(echo "$changed_chart_path" | cut -d'/' -f3)
+              if [ -n "$detected_env" ]; then
+                ENV="$detected_env"
+                echo "Detected environment from changed path: $ENV"
+              fi
+              if [ -n "$detected_service" ]; then
+                SERVICE_NAME="$detected_service"
+                echo "Detected service from changed path: $SERVICE_NAME"
+              fi
+            else
+              echo "No chart changes detected in commit"
+              exit 0
+            fi
+          else
+            echo "No changed files detected"
+            exit 0
+          fi
+          if [ -z "$ENV" ] || [ -z "$SERVICE_NAME" ]; then
+            echo "Error: Could not detect ENV or SERVICE_NAME"
+            exit 1
+          fi
+        fi
+        echo "Using service: $SERVICE_NAME"
+        echo "Using environment: $ENV"
+        expected_chart_path="${REPO_ROOT}/${ENV}/charts/${SERVICE_NAME}"
+        if [ ! -d "$expected_chart_path" ]; then
+          echo "Error: Chart directory not found at expected path: $expected_chart_path"
+          exit 1
+        else
+          echo "Found chart at path: $expected_chart_path"
+        fi
+      fi
+
+# ===================================================================
+# OpenShift login (fixed token lookup)
+# ===================================================================
+.openshift_login_setup:
+  before_script:
+    - |
+      set -eo pipefail
+      if [ -z "$KUBE_NAMESPACE" ]; then
+        echo "Error: KUBE_NAMESPACE not set."; exit 1
+      fi
+      case $ENV in
+        dev|sit|uat|int)          SERVER="$DEV_CLUSTER"; TOKEN_VAR="DEV_TOKEN" ;;
+        pre-prod|perf)            SERVER="$PREPROD_CLUSTER"; TOKEN_VAR="PREPROD_TOKEN" ;;
+        pre-prod-dc)              SERVER="$PREPROD_DC_CLUSTER"; TOKEN_VAR="PREPROD_DC_TOKEN" ;;
+        prod-dr)                  SERVER="$PROD_DR_CLUSTER"; TOKEN_VAR="PROD_DR_TOKEN" ;;
+        prod-dc)                  SERVER="$PROD_DC_CLUSTER"; TOKEN_VAR="PROD_DC_TOKEN" ;;
+        *) echo "Invalid ENV"; exit 1 ;;
+      esac
+      oc login "$SERVER" --token="${!TOKEN_VAR}" --insecure-skip-tls-verify
+      oc project "$KUBE_NAMESPACE" || oc create ns "$KUBE_NAMESPACE"
+
+# ===================================================================
+# validate_service — 100% YOUR ORIGINAL LOGIC
+# ===================================================================
+validate_service:
+  stage: validate
+  image: ${IMAGE_REGISTRY}/library/rhelgit:latest
+  before_script:
+    - !reference [.validate_variables, before_script]
+    - echo "$SERVICES_CONFIG" > /tmp/services_config.yml
+  script:
+    - |
+      set -eo pipefail
+      SERVICE_CONFIG=$(awk -v service="$SERVICE_NAME" -v env="$ENV" '
+        BEGIN { found=0; in_service=0; in_environments=0; }
+        /^[[:space:]]*-[[:space:]]*name:/ {
+          if ($0 ~ service) { found=1; in_service=1; }
+          else { in_service=0; }
+        }
+        /^[[:space:]]*-[[:space:]]*namespace:/ {
+          gsub(/^[[:space:]]*-[[:space:]]*namespace:[[:space:]]*/, "")
+          current_namespace = $0
+          in_service = 0
+          in_environments = 0
+        }
+        /^[[:space:]]*services:[[:space:]]*$/ { in_services_section = 1 }
+        in_services_section && /^[[:space:]]*-[[:space:]]*name:/ {
+          gsub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/, "")
+          if ($0 == service) {
+            found = 1
+            in_service = 1
+            in_environments = 0
+            printf("NAMESPACE=%s%s%s\n", q, current_namespace, q)
+          } else {
+            in_service = 0
+          }
+        }
+        found && in_service {
+          if (/^[[:space:]]*release:/) {
+            gsub(/^[[:space:]]*release:[[:space:]]*/, "")
+            printf("RELEASE=%s%s%s\n", q, $0, q)
+          }
+          else if (/^[[:space:]]*chart:/) {
+            gsub(/^[[:space:]]*chart:[[:space:]]*/, "")
+            printf("CHART=%s%s%s\n", q, $0, q)
+          }
+          else if (/^[[:space:]]*health_check:/) {
+            gsub(/^[[:space:]]*health_check:[[:space:]]*/, "")
+            printf("HEALTH_CHECK=%s%s%s\n", q, $0, q)
+          }
+          else if (/^[[:space:]]*environments:[[:space:]]*$/) {
+            in_environments = 1
+          }
+          else if (in_environments && /^[[:space:]]*-[[:space:]]*[a-zA-Z0-9_-]+$/) {
+            env_name_raw = $0
+            gsub(/^[[:space:]]*-[[:space:]]*/, "", env_name_raw)
+            gsub(/-/, "_", env_name_raw)
+            printf("ENV_%s=1\n", env_name_raw)
+          }
+        }
+        END { if (!found) print "SERVICE_NOT_FOUND=1" }
+      ' /tmp/services_config.yml)
+      eval "$SERVICE_CONFIG"
+      if [ "$SERVICE_NOT_FOUND" = "1" ]; then
+        echo "Error: Service '$SERVICE_NAME' not found"
+        exit 1
+      fi
+      for field in NAMESPACE RELEASE CHART; do
+        if [ -z "${!field}" ]; then
+          echo "Error: Missing $field for service '$SERVICE_NAME'"
+          exit 1
+        fi
+      done
+      env_var="ENV_${ENV//-/_}"
+      if [ -z "${!env_var}" ]; then
+        echo "Error: Environment '$ENV' not supported for '$SERVICE_NAME'"
+        exit 1
+      fi
+      KUBE_NAMESPACE="${ENV}-${NAMESPACE}"
+      CHART_PATH="${REPO_ROOT}/${ENV}/charts/${CHART}"
+      cat > build.env << EOF
+      KUBE_NAMESPACE=$KUBE_NAMESPACE
+      RELEASE_NAME=$RELEASE
+      CHART_PATH=$CHART_PATH
+      HEALTH_CHECK_ENDPOINT=$HEALTH_CHECK
+      ENV=$ENV
+      SERVICE_NAME=$SERVICE_NAME
+      EOF
+      export KUBE_NAMESPACE RELEASE_NAME CHART_PATH HEALTH_CHECK_ENDPOINT
+      echo "Validation successful → $SERVICE_NAME in $ENV"
+  artifacts:
+    reports:
+      dotenv: build.env
+    expire_in: 1h
+
+# ===================================================================
+# deploy_one_service — 100% YOUR ORIGINAL DEPLOY SCRIPT
+# ===================================================================
+.deploy_one_service:
+  stage: deploy
+  extends:
+    - .helm_image
+    - .openshift_login_setup
+  needs:
+    - job: validate_service
+      artifacts: true
+  script:
+    - |
+      set -eo pipefail
+      echo "Deploying $RELEASE_NAME to $KUBE_NAMESPACE (from $CHART_PATH)"
+      helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" \
+        --namespace "$KUBE_NAMESPACE" \
+        --history-max 10 \
+        --timeout 15m \
+        ${HELM_ATOMIC:+"--atomic"} \
+        ${VERSION:+"--set image.tag=$VERSION"} \
+        ${HELM_EXTRA_ARGS}
+  rules:
+    - when: on_success
+
+# ===================================================================
+# verify_deployment — 100% YOUR ORIGINAL VERIFY SCRIPT
+# ===================================================================
+verify_deployment:
+  stage: verify
+  extends:
+    - .helm_image
+    - .openshift_login_setup
+  needs:
+    - job: validate_service
+      artifacts: true
+    - job: .deploy_one_service
+  allow_failure: true
+  script:
+    - |
+      set -eo pipefail
+      echo "Waiting for rollout of deployment/$RELEASE_NAME in $KUBE_NAMESPACE..."
+      if ! oc rollout status "deployment/$RELEASE_NAME" -n "$KUBE_NAMESPACE" --timeout=15m; then
+        echo "Rollout failed — checking pods..."
+        oc get pods -n "$KUBE_NAMESPACE" -l app="$RELEASE_NAME"
+        helm rollback "$RELEASE_NAME" -n "$KUBE_NAMESPACE" || true
+        exit 1
+      fi
+      echo "Deployment successful and verified"
+  rules:
+    - when: on_success
