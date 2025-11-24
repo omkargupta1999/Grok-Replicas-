@@ -1,0 +1,306 @@
+# cd/helm/helmv2.yml
+# SINGLE FILE — FULLY DYNAMIC + 100% BACKWARD COMPATIBLE
+# Works for: Merge Request, Direct Push, Manual Run, Scheduled, Trigger
+
+include:
+  - project: 'epay/devops/ci-templates'
+    ref: main
+    file: 'cd/helm/services.yml'
+
+stages:
+  - detect
+  - generate
+  - deploy
+  - verify
+
+variables:
+  DEV_CLUSTER: "https://api.dev.sbiepay.sbi:6443"
+  PREPROD_CLUSTER: "https://api.preprod.epay.sbi:6443"
+  PREPROD_DC_CLUSTER: "https://api.dcpreprod.epay.sbi:6443"
+  PROD_DR_CLUSTER: "https://api.dr.prod.epay.sbi:6443"
+  PROD_DC_CLUSTER: "https://api.dc.prod.epay.sbi:6443"
+  IMAGE_REGISTRY: "registry.dev.sbiepay.sbi:8443"
+  GIT_STRATEGY: clone
+  GIT_DEPTH: 0
+
+# ===================================================================
+# 1. DETECT ALL CHANGED CHARTS (MR + direct push + commit)
+# ===================================================================
+detect_changed_charts:
+  stage: detect
+  image: ${IMAGE_REGISTRY}/library/rhelgit:latest
+  script:
+    - |
+      set -eo pipefail
+      git fetch --all --depth=500 || true
+
+      if [ "$CI_COMMIT_BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+        CHANGED_FILES=$(git ls-files)
+      else
+        CHANGED_FILES=$(git diff --name-only $CI_COMMIT_BEFORE_SHA $CI_COMMIT_SHA)
+      fi
+
+      echo "Changed files in this commit:"
+      echo "$CHANGED_FILES" | grep -E 'charts/' || echo "(none)"
+
+      # Extract unique env/service pairs → dev/payment-gateway, sit/auth-service, etc.
+      CHANGED_CHARTS=$(echo "$CHANGED_FILES" | \
+        grep -E '^(dev|sit|uat|int|perf|pre-prod|pre-prod-dc|prod-dr|prod-dc)/charts/[^/]+/' | \
+        sed -E 's|^(.*)/charts/([^/]+)/.*$|\1/\2|' | sort -u)
+
+      if [ -z "$CHANGED_CHARTS" ]; then
+        echo "NO_CHARTS_CHANGED=true" > skip.env
+        echo "No Helm charts changed → skipping deployment"
+        exit 0
+      fi
+
+      echo "DETECTED $(echo "$CHANGED_CHARTS" | wc -l) modified service(s):"
+      echo "$CHANGED_CHARTS" | tee changed_charts.txt
+
+      # Generate matrix for dynamic jobs
+      MATRIX=$(echo "$CHANGED_CHARTS" | awk -F'/' '
+        {
+          env = $1
+          gsub(/-/, "_", env)
+          service = $2
+          printf "{\"env\":\"%s\",\"service\":\"%s\"},", env, service
+        }' | sed 's/,$//')
+
+      cat > matrix.json <<EOF
+      [$MATRIX]
+      EOF
+
+      echo "Matrix:"
+      cat matrix.json | jq .
+  artifacts:
+    reports:
+      dotenv: skip.env
+    paths:
+      - matrix.json
+      - changed_charts.txt
+    expire_in: 2h
+  rules:
+    - changes:
+        - "**/charts/**/*"
+      when: on_success
+    - when: manual
+
+# ===================================================================
+# 2. GENERATE DYNAMIC CHILD PIPELINE (one job per service)
+# ===================================================================
+generate_dynamic_pipeline:
+  stage: generate
+  image: alpine:latest
+  needs:
+    - job: detect_changed_charts
+      artifacts: true
+  script:
+    - apk add --no-cache jq
+    - |
+      if grep -q "NO_CHARTS_CHANGED=true" skip.env 2>/dev/null; then
+        echo "No charts changed → skipping deployment"
+        exit 0
+      fi
+
+      cat > dynamic-child.yml <<'EOF'
+      stages:
+        - validate
+        - deploy
+        - verify
+
+      # Re-use this same file with matrix variables
+      include:
+        - local: '/cd/helm/helmv2.yml'
+
+      EOF
+
+      # Create one deployment job per changed service
+      jq -r '.[] as $i |
+        "deploy__\($i.env)__\($i.service):\n  extends: .deploy_one_service\n  variables:\n    ENV: \"\($i.env)\"\n    SERVICE_NAME: \"\($i.service)\"\n"' \
+        matrix.json >> dynamic-child.yml
+
+      echo "Generated $(jq length matrix.json) parallel deployment jobs:"
+      cat dynamic-child.yml
+  artifacts:
+    paths:
+      - dynamic-child.yml
+    expire_in: 2h
+
+# ===================================================================
+# 3. TRIGGER ALL DEPLOYMENTS IN PARALLEL
+# ===================================================================
+trigger_deployments:
+  stage: deploy
+  trigger:
+    include:
+      - artifact: dynamic-child.yml
+        job: generate_dynamic_pipeline
+    strategy: depend
+  rules:
+    - when: on_success
+
+# ===================================================================
+# 4. YOUR ORIGINAL LOGIC — 100% UNCHANGED (for manual/scheduled)
+# ===================================================================
+
+# Your original variable detection (keeps head -1 for manual runs)
+.validate_variables:
+  before_script:
+    - |
+      set -eo pipefail
+      REPO_ROOT=$(pwd)
+      echo "Repository root: $REPO_ROOT"
+      if [ -n "$CI_PIPELINE_SOURCE" ] && [ "$CI_PIPELINE_SOURCE" = "pipeline" ]; then
+        echo "This is a pipeline trigger"
+        if [ -z "$SERVICE_NAME" ] || [ -z "$ENV" ]; then
+          echo "Error: Pipeline trigger requires SERVICE_NAME and ENV variables"
+          exit 1
+        fi
+        if [[ ! "$ENV" =~ ^(dev|sit|uat|int|perf|pre-prod|pre-prod-dc|prod-dr|prod-dc)$ ]]; then
+          echo "Error: Invalid environment '$ENV' for pipeline trigger"
+          exit 1
+        fi
+      else
+        git config --global http.sslVerify false
+        git config --global --add safe.directory '*'
+        git config --global user.name "ci"
+        git config --global user.email "ci.cedge@sbi.co.in"
+        git remote set-url origin https://gitlab-ci-token:$GIT_PAT@gitlab.epay.sbi/$CI_PROJECT_PATH.git
+        if [ -z "$CI_COMMIT_CHANGED_FILES" ] && [ -n "$CI_COMMIT_SHA" ] && [ -n "$CI_COMMIT_BEFORE_SHA" ]; then
+          CI_COMMIT_CHANGED_FILES=$(git diff --name-only "$CI_COMMIT_BEFORE_SHA" "$CI_COMMIT_SHA")
+        fi
+        if [ -z "$SERVICE_NAME" ] || [ -z "$ENV" ]; then
+          changed_chart_path=$(echo "$CI_COMMIT_CHANGED_FILES" | grep -oE '(dev|sit|uat|int|perf|pre-prod|pre-prod-dc|prod-dr|prod-dc)/charts/[^/]+' | head -1)
+          if [ -n "$changed_chart_path" ]; then
+            ENV=$(echo "$changed_chart_path" | cut -d'/' -f1)
+            SERVICE_NAME=$(echo "$changed_chart_path" | cut -d'/' -f3)
+          else
+            echo "No chart changes detected"
+            exit 0
+          fi
+        fi
+        expected_chart_path="${REPO_ROOT}/${ENV}/charts/${SERVICE_NAME}"
+        if [ ! -d "$expected_chart_path" ]; then
+          echo "Error: Chart not found: $expected_chart_path"
+          exit 1
+        fi
+      fi
+
+# OpenShift login
+.openshift_login_setup:
+  before_script:
+    - |
+      set -eo pipefail
+      if [ -z "$KUBE_NAMESPACE" ]; then echo "KUBE_NAMESPACE missing"; exit 1; fi
+      case $ENV in
+        dev|sit|uat|int)          SERVER="$DEV_CLUSTER"; TOKEN_VAR="DEV_TOKEN" ;;
+        pre-prod|perf)            SERVER="$PREPROD_CLUSTER"; TOKEN_VAR="PREPROD_TOKEN" ;;
+        pre-prod-dc)              SERVER="$PREPROD_DC_CLUSTER"; TOKEN_VAR="PREPROD_DC_TOKEN" ;;
+        prod-dr)                  SERVER="$PROD_DR_CLUSTER"; TOKEN_VAR="PROD_DR_TOKEN" ;;
+        prod-dc)                  SERVER="$PROD_DC_CLUSTER"; TOKEN_VAR="PROD_DC_TOKEN" ;;
+        *) echo "Invalid ENV: $ENV"; exit 1 ;;
+      esac
+      oc login "$SERVER" --token="${!TOKEN_VAR}" --insecure-skip-tls-verify
+      oc project "$KUBE_NAMESPACE" || oc create ns "$KUBE_NAMESPACE"
+
+.helm_image:
+  image:
+    name: ${IMAGE_REGISTRY}/ubi9/ochelm:03122024
+    entrypoint: [""]
+
+# ===================================================================
+# REUSABLE JOBS — used by both dynamic and manual paths
+# ===================================================================
+
+validate_service:
+  stage: validate
+  image: ${IMAGE_REGISTRY}/library/rhelgit:latest
+  before_script:
+    - !reference [.validate_variables, before_script]
+    - echo "$SERVICES_CONFIG" > /tmp/services_config.yml
+  script:
+    - |
+      set -eo pipefail
+      SERVICE_CONFIG=$(awk -v service="$SERVICE_NAME" -v env="$ENV" '
+        BEGIN { found=0; in_service=0; q="\"" }
+        /^[[:space:]]*-[[:space:]]*name:/ && $0 ~ service { found=1; in_service=1 }
+        found && in_service && /^[[:space:]]*release:/ { gsub(/.*release:[[:space:]]*/, ""); printf "RELEASE=%s%s%s\n", q, $0, q }
+        found && in_service && /^[[:space:]]*chart:/ { gsub(/.*chart:[[:space:]]*/, ""); printf "CHART=%s%s%s\n", q, $0, q }
+        found && in_service && /^[[:space:]]*namespace:/ { gsub(/.*namespace:[[:space:]]*/, ""); printf "NAMESPACE=%s%s%s\n", q, $0, q }
+        found && in_service && /^[[:space:]]*health_check:/ { gsub(/.*health_check:[[:space:]]*/, ""); printf "HEALTH_CHECK=%s%s%s\n", q, $0, q }
+        found && in_service && /^[[:space:]]*environments:/ { in_env=1 }
+        in_env && /^[[:space:]]*-[[:space:]]*/ { gsub(/^[[:space:]]*-[[:space:]]*/, ""); gsub(/-/, "_", $0); printf "ENV_%s=1\n", toupper($0) }
+        END { if (!found) print "SERVICE_NOT_FOUND=1" }
+      ' /tmp/services_config.yml)
+      eval "$SERVICE_CONFIG"
+      [ "$SERVICE_NOT_FOUND" = "1" ] && echo "Service $SERVICE_NAME not found" && exit 1
+      KUBE_NAMESPACE="${ENV}-${NAMESPACE}"
+      CHART_PATH="${REPO_ROOT}/${ENV}/charts/${CHART}"
+      cat > build.env <<EOF
+      KUBE_NAMESPACE=$KUBE_NAMESPACE
+      RELEASE_NAME=$RELEASE
+      CHART_PATH=$CHART_PATH
+      HEALTH_CHECK_ENDPOINT=$HEALTH_CHECK
+      ENV=$ENV
+      SERVICE_NAME=$SERVICE_NAME
+      EOF
+      echo "Validation OK → $SERVICE_NAME in $ENV"
+  artifacts:
+    reports:
+      dotenv: build.env
+    expire_in: 1h
+
+.deploy_one_service:
+  stage: deploy
+  extends:
+    - .helm_image
+    - .openshift_login_setup
+  needs:
+    - job: validate_service
+      artifacts: true
+  script:
+    - |
+      set -eo pipefail
+      echo "Deploying $RELEASE_NAME → $KUBE_NAMESPACE"
+      helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" \
+        --namespace "$KUBE_NAMESPACE" \
+        --history-max 10 \
+        --timeout 15m \
+        ${HELM_ATOMIC:+"--atomic"} \
+        ${VERSION:+"--set image.tag=$VERSION"} \
+        ${HELM_EXTRA_ARGS}
+  rules:
+    - when: on_success
+
+verify_deployment:
+  stage: verify
+  extends:
+    - .helm_image
+    - .openshift_login_setup
+  needs:
+    - job: validate_service
+      artifacts: true
+    - job: .deploy_one_service
+  allow_failure: true
+  script:
+    - |
+      set -eo pipefail
+      echo "Verifying rollout..."
+      oc rollout status "deployment/$RELEASE_NAME" -n "$KUBE_NAMESPACE" --timeout=15m || \
+        (oc get pods -n "$KUBE_NAMESPACE"; helm rollback "$RELEASE_NAME" -n "$KUBE_NAMESPACE"; exit 1)
+      echo "Deployment verified"
+  rules:
+    - when: on_success
+
+# ===================================================================
+# MANUAL / SCHEDULED FALLBACK (100% same as before)
+# ===================================================================
+manual_deploy:
+  extends: .deploy_one_service
+  variables:
+    ENV: $ENV
+    SERVICE_NAME: $SERVICE_NAME
+  rules:
+    - if: '$SERVICE_NAME && $ENV'
+      when: manual
+    - when: never
