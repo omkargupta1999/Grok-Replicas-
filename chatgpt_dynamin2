@@ -180,3 +180,87 @@ trigger_deployments:
       artifacts: true
   rules:
     - when: on_success
+
+
+
+
+
+
+
+
+
+===============================
+
+
+generate_dynamic_pipeline:
+  stage: validate
+  image:
+    name: ${IMAGE_REGISTRY}/ubi9/ochelm:03122024
+    entrypoint: [""]
+  needs:
+    - job: detect_changed_charts
+      artifacts: true
+  script:
+    - |
+      set -eo pipefail
+
+      if [ -f changed_charts.env ]; then
+        . changed_charts.env
+      fi
+
+      # Case 1: No changed charts → generate minimal valid child pipeline
+      if [ "${NO_CHARTS_CHANGED:-0}" = "1" ] || [ ! -s changed_charts.txt ]; then
+        echo "No charts changed → creating minimal child pipeline with noop job."
+
+        cat > dynamic-child.yml <<EOF
+stages:
+  - deploy
+
+noop:
+  stage: deploy
+  script:
+    - echo "No services changed — skipping deployment"
+EOF
+        exit 0
+      fi
+
+      # Case 2: Services changed → create proper matrix
+      echo "Generating dynamic-child.yml from changed_charts.txt..."
+
+      echo "stages:"     >  dynamic-child.yml
+      echo "  - deploy"  >> dynamic-child.yml
+      echo ""            >> dynamic-child.yml
+
+      while read -r chart_path; do
+        [ -z "$chart_path" ] && continue
+
+        env=$(echo "$chart_path" | cut -d'/' -f1)
+        svc=$(echo "$chart_path" | cut -d'/' -f2)
+        job_name="deploy__${env}__${svc}"
+
+        {
+          echo "${job_name}:"
+          echo "  stage: deploy"
+          echo "  trigger:"
+          echo "    include:"
+          echo "      - project: 'epay/devops/ci-templates'"
+          echo "        ref: main"
+          echo "        file: 'cd/helm/helmv2.yml'"
+          echo "    strategy: depend"
+          echo "  variables:"
+          echo "    ENV: \"${env}\""
+          echo "    SERVICE_NAME: \"${svc}\""
+          echo ""
+        } >> dynamic-child.yml
+
+      done < changed_charts.txt
+
+      echo "Generated dynamic-child.yml:"
+      cat dynamic-child.yml
+
+  artifacts:
+    paths:
+      - dynamic-child.yml
+    expire_in: 2h
+  rules:
+    - when: on_success
