@@ -1,39 +1,146 @@
-Running with gitlab-runner 17.8.0 (e4f782b3)
-  on DC-Gitlab-Runner rMTQxLq3, system ID: s_948d0ccb739a
-Resolving secrets
-Preparing the "docker" executor
-00:05
-Using Docker executor with image registry.dev.sbiepay.sbi:8443/ubi9/ochelm:03122024 ...
-Using helper image:  registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper:latest  (overridden, default would be  registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v17.8.0 )
-Pulling docker image registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper:latest ...
-Using docker image sha256:c95744588b6d7e170a6866854932de40eaf1b5ed229ed818cba6a87a1f885773 for registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper:latest with digest registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper@sha256:ebbf1c21e4272ae1f8c18b034d390809c836c2fc68c0f0f6d3a5aff9760aabf5 ...
-Using helper image:  registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper:latest  (overridden, default would be  registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v17.8.0 )
-Using docker image sha256:c95744588b6d7e170a6866854932de40eaf1b5ed229ed818cba6a87a1f885773 for registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper:latest with digest registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper@sha256:ebbf1c21e4272ae1f8c18b034d390809c836c2fc68c0f0f6d3a5aff9760aabf5 ...
-Pulling docker image registry.dev.sbiepay.sbi:8443/ubi9/ochelm:03122024 ...
-Using docker image sha256:e35c3559b44abd0dfdbb0d2452de990630985a9f95782c3f92357d62e1f6db71 for registry.dev.sbiepay.sbi:8443/ubi9/ochelm:03122024 with digest registry.dev.sbiepay.sbi:8443/ubi9/ochelm@sha256:f3dea1ca55cf5f37fb762cce33f16f409e63c9ad14aa203c83963ff73244c54c ...
-Preparing environment
-00:02
-Using helper image:  registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper:latest  (overridden, default would be  registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v17.8.0 )
-Using docker image sha256:c95744588b6d7e170a6866854932de40eaf1b5ed229ed818cba6a87a1f885773 for registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper:latest with digest registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper@sha256:ebbf1c21e4272ae1f8c18b034d390809c836c2fc68c0f0f6d3a5aff9760aabf5 ...
-Running on runner-rmtqxlq3-project-23-concurrent-0 via Gitlab-DC-Runr...
-Getting source from Git repository
-00:04
-$ git config --global http.proxy $HTTP_PROXY; git config --global https.proxy $HTTPS_PROXY; git config --global no.proxy $NO_PROXY
-Fetching changes with git depth set to 50...
-Initialized empty Git repository in /tmp/builds/epay/devops/deployment/.git/
-Created fresh repository.
-Checking out 830a9051 as detached HEAD (ref is main)...
-Skipping Git submodules setup
-Downloading artifacts
-00:01
-Downloading artifacts for detect_changed_charts (208840)...
-Downloading artifacts from coordinator... ok        id=208840 responseStatus=200 OK token=glcbt-64
-WARNING: changed_charts.txt: lchown changed_charts.txt: operation not permitted (suppressing repeats) 
-Executing "step_script" stage of the job script
-00:02
-Using docker image sha256:e35c3559b44abd0dfdbb0d2452de990630985a9f95782c3f92357d62e1f6db71 for registry.dev.sbiepay.sbi:8443/ubi9/ochelm:03122024 with digest registry.dev.sbiepay.sbi:8443/ubi9/ochelm@sha256:f3dea1ca55cf5f37fb762cce33f16f409e63c9ad14aa203c83963ff73244c54c ...
-$ set -eo pipefail # collapsed multi-line command
-/usr/bin/bash: line 173: changed_charts.env: No such file or directory
-Cleaning up project directory and file based variables
-00:01
-ERROR: Job failed: exit code 1
+# cd/helm/helmv2-dynamic.yml
+# Detect changed Helm charts and trigger parallel deployments (child pipelines)
+
+variables:
+  IMAGE_REGISTRY: "registry.dev.sbiepay.sbi:8443"
+  GIT_STRATEGY: clone
+  GIT_DEPTH: 50
+
+.git_gitimage:
+  image:
+    name: ${IMAGE_REGISTRY}/library/rhelgit:latest
+    entrypoint: [""]
+
+# IMPORTANT: MUST MATCH ROOT .gitlab-ci.yml STAGES
+stages:
+  - commit
+  - validate
+  - deploy
+  - verify
+
+# ---------------------------------------------------
+# 1) Detect changed Helm charts
+# ---------------------------------------------------
+detect_changed_charts:
+  stage: validate
+  extends:
+    - .git_gitimage
+  script:
+    - |
+      set -eo pipefail
+
+      git config --global http.sslVerify false
+      git config --global --add safe.directory '*'
+      git config --global user.name "ci"
+      git config --global user.email "ci.cedge@sbi.co.in"
+
+      # Determine changed files
+      if [ -n "$CI_COMMIT_BEFORE_SHA" ] && \
+         [ "$CI_COMMIT_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+        CHANGED_FILES=$(git diff --name-only "$CI_COMMIT_BEFORE_SHA" "$CI_COMMIT_SHA")
+      else
+        CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD || git ls-files)
+      fi
+
+      echo "$CHANGED_FILES" > changed_files.txt
+
+      CHART_LINES=$(grep -E '^(dev|sit|uat|int|perf|pre-prod|pre-prod-dc|prod-dr|prod-dc)/charts/[^/]+' changed_files.txt \
+        | sed -E 's|(.*)/charts/([^/]+)/.*|\1/\2|' \
+        | sort -u || true)
+
+      if [ -z "$CHART_LINES" ]; then
+        echo "NO_CHARTS_CHANGED=1" > changed_charts.env
+      else
+        echo "$CHART_LINES" > changed_charts.txt
+        echo "NO_CHARTS_CHANGED=0" > changed_charts.env
+      fi
+
+  artifacts:
+    reports:
+      dotenv: changed_charts.env
+    paths:
+      - changed_charts.txt
+    expire_in: 1h
+
+  rules:
+    - changes:
+        - "**/charts/**/*"
+      when: on_success
+    - when: manual
+
+# ---------------------------------------------------
+# 2) Generate dynamic child pipeline config
+# ---------------------------------------------------
+generate_dynamic_pipeline:
+  stage: validate
+  image:
+    name: ${IMAGE_REGISTRY}/ubi9/ochelm:03122024
+    entrypoint: [""]
+  needs:
+    - job: detect_changed_charts
+      artifacts: true
+  script:
+    - |
+      set -eo pipefail
+
+      . changed_charts.env 2>/dev/null || true
+
+      # 📌 Case: No charts changed → child pipeline must still contain 1 job
+      if [ "$NO_CHARTS_CHANGED" = "1" ] || [ ! -s changed_charts.txt ]; then
+        printf "stages:\n  - deploy\n\nnoop:\n  stage: deploy\n  script:\n    - echo 'No chart changes detected'\n" \
+          > dynamic-child.yml
+        exit 0
+      fi
+
+      # 📌 Case: Changes detected
+      printf "stages:\n  - deploy\n\n" > dynamic-child.yml
+
+      while read -r line; do
+        [ -z "$line" ] && continue
+
+        env=$(echo "$line" | cut -d'/' -f1)
+        svc=$(echo "$line" | cut -d'/' -f2)
+        job_name="deploy__${env}__${svc}"
+
+        {
+          echo "${job_name}:"
+          echo "  stage: deploy"
+          echo "  trigger:"
+          echo "    include:"
+          echo "      - project: 'epay/devops/ci-templates'"
+          echo "        ref: main"
+          echo "        file: 'cd/helm/helmv2.yml'"
+          echo "    strategy: depend"
+          echo "  variables:"
+          echo "    ENV: \"${env}\""
+          echo "    SERVICE_NAME: \"${svc}\""
+          echo ""
+        } >> dynamic-child.yml
+      done < changed_charts.txt
+
+      echo "Generated dynamic-child.yml:"
+      cat dynamic-child.yml
+
+  artifacts:
+    paths:
+      - dynamic-child.yml
+    expire_in: 1h
+
+  rules:
+    - when: on_success
+
+# ---------------------------------------------------
+# 3) Trigger all deployments via child pipeline
+# ---------------------------------------------------
+trigger_deployments:
+  stage: deploy
+  trigger:
+    include:
+      - artifact: dynamic-child.yml
+        job: generate_dynamic_pipeline
+    strategy: depend
+  needs:
+    - job: generate_dynamic_pipeline
+      artifacts: true
+  rules:
+    - when: on_success
