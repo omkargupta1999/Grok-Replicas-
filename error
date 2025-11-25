@@ -30,3 +30,17 @@ error
   0 jobs
 Unable to create pipeline
 jobs config should contain at least one visible job
+==============================
+
+Update 3 files
+Failed
+ Suraj Bharat Andhale V1021495 created pipeline for commit 438b30f2  just now, finished just now
+For main
+latest
+ 
+yaml invalid
+ 
+error
+  0 jobs
+Unable to create pipeline
+`cd/helm/helmv2-dynamic.yml`: (): could not find expected ':' while scanning a simple key at line 125 column 1
