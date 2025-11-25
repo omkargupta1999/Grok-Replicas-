@@ -1,46 +1,39 @@
-Update 5 files
-Failed
- Suraj Bharat Andhale V1021495 created pipeline for commit 45cdfd20  just now, finished just now
-For main
-latest
- 
-yaml invalid
- 
-error
-  0 jobs
-Unable to create pipeline
-`cd/helm/helmv2-dynamic.yml`: (): could not find expected ':' while scanning a simple key at line 117 column 1
-
-
-========================
-
-Revert "Update 5 files"
-Failed
- Omkar Gupta created pipeline for commit bfdc20eb  2 minutes ago, finished 2 minutes ago
-For main
-Child pipeline (
-parent
-)
- 
-latest
- 
-yaml invalid
- 
-error
-  0 jobs
-Unable to create pipeline
-jobs config should contain at least one visible job
-==============================
-
-Update 3 files
-Failed
- Suraj Bharat Andhale V1021495 created pipeline for commit 438b30f2  just now, finished just now
-For main
-latest
- 
-yaml invalid
- 
-error
-  0 jobs
-Unable to create pipeline
-`cd/helm/helmv2-dynamic.yml`: (): could not find expected ':' while scanning a simple key at line 125 column 1
+Running with gitlab-runner 17.8.0 (e4f782b3)
+  on DC-Gitlab-Runner rMTQxLq3, system ID: s_948d0ccb739a
+Resolving secrets
+Preparing the "docker" executor
+00:05
+Using Docker executor with image registry.dev.sbiepay.sbi:8443/ubi9/ochelm:03122024 ...
+Using helper image:  registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper:latest  (overridden, default would be  registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v17.8.0 )
+Pulling docker image registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper:latest ...
+Using docker image sha256:c95744588b6d7e170a6866854932de40eaf1b5ed229ed818cba6a87a1f885773 for registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper:latest with digest registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper@sha256:ebbf1c21e4272ae1f8c18b034d390809c836c2fc68c0f0f6d3a5aff9760aabf5 ...
+Using helper image:  registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper:latest  (overridden, default would be  registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v17.8.0 )
+Using docker image sha256:c95744588b6d7e170a6866854932de40eaf1b5ed229ed818cba6a87a1f885773 for registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper:latest with digest registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper@sha256:ebbf1c21e4272ae1f8c18b034d390809c836c2fc68c0f0f6d3a5aff9760aabf5 ...
+Pulling docker image registry.dev.sbiepay.sbi:8443/ubi9/ochelm:03122024 ...
+Using docker image sha256:e35c3559b44abd0dfdbb0d2452de990630985a9f95782c3f92357d62e1f6db71 for registry.dev.sbiepay.sbi:8443/ubi9/ochelm:03122024 with digest registry.dev.sbiepay.sbi:8443/ubi9/ochelm@sha256:f3dea1ca55cf5f37fb762cce33f16f409e63c9ad14aa203c83963ff73244c54c ...
+Preparing environment
+00:02
+Using helper image:  registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper:latest  (overridden, default would be  registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v17.8.0 )
+Using docker image sha256:c95744588b6d7e170a6866854932de40eaf1b5ed229ed818cba6a87a1f885773 for registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper:latest with digest registry.dev.sbiepay.sbi:8443/library/gitlab-runner-helper@sha256:ebbf1c21e4272ae1f8c18b034d390809c836c2fc68c0f0f6d3a5aff9760aabf5 ...
+Running on runner-rmtqxlq3-project-23-concurrent-0 via Gitlab-DC-Runr...
+Getting source from Git repository
+00:04
+$ git config --global http.proxy $HTTP_PROXY; git config --global https.proxy $HTTPS_PROXY; git config --global no.proxy $NO_PROXY
+Fetching changes with git depth set to 50...
+Initialized empty Git repository in /tmp/builds/epay/devops/deployment/.git/
+Created fresh repository.
+Checking out 830a9051 as detached HEAD (ref is main)...
+Skipping Git submodules setup
+Downloading artifacts
+00:01
+Downloading artifacts for detect_changed_charts (208840)...
+Downloading artifacts from coordinator... ok        id=208840 responseStatus=200 OK token=glcbt-64
+WARNING: changed_charts.txt: lchown changed_charts.txt: operation not permitted (suppressing repeats) 
+Executing "step_script" stage of the job script
+00:02
+Using docker image sha256:e35c3559b44abd0dfdbb0d2452de990630985a9f95782c3f92357d62e1f6db71 for registry.dev.sbiepay.sbi:8443/ubi9/ochelm:03122024 with digest registry.dev.sbiepay.sbi:8443/ubi9/ochelm@sha256:f3dea1ca55cf5f37fb762cce33f16f409e63c9ad14aa203c83963ff73244c54c ...
+$ set -eo pipefail # collapsed multi-line command
+/usr/bin/bash: line 173: changed_charts.env: No such file or directory
+Cleaning up project directory and file based variables
+00:01
+ERROR: Job failed: exit code 1
