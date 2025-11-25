@@ -1,0 +1,172 @@
+# cd/helm/helmv2-dynamic.yml
+# Wrapper: detect changed charts → start parallel per-service pipelines using helmv2.yml
+
+stages:
+  - detect
+  - generate
+  - trigger
+
+variables:
+  IMAGE_REGISTRY: "registry.dev.sbiepay.sbi:8443"
+  GIT_STRATEGY: clone
+  GIT_DEPTH: 20
+
+.git_image:
+  image:
+    name: ${IMAGE_REGISTRY}/library/rhelgit:latest
+    entrypoint: [""]
+
+# ---------------------------------------------------
+# 1) Detect changed Helm chart directories
+# ---------------------------------------------------
+detect_changed_charts:
+  stage: detect
+  extends:
+    - .git_image
+  script:
+    - |
+      set -eo pipefail
+
+      REPO_ROOT=$(pwd)
+      echo "Repository root: $REPO_ROOT"
+
+      git config --global http.sslVerify false
+      git config --global --add safe.directory '*'
+      git config --global user.name "ci"
+      git config --global user.email "ci.cedge@sbi.co.in"
+
+      echo "CI_COMMIT_SHA        = $CI_COMMIT_SHA"
+      echo "CI_COMMIT_BEFORE_SHA = $CI_COMMIT_BEFORE_SHA"
+
+      # Figure out changed files for this commit / merge
+      if [ -n "$CI_COMMIT_BEFORE_SHA" ] && \
+         [ "$CI_COMMIT_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+        CHANGED_FILES=$(git diff --name-only "$CI_COMMIT_BEFORE_SHA" "$CI_COMMIT_SHA")
+      else
+        # Fallback for first commit or missing BEFORE_SHA
+        CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD || git ls-files)
+      fi
+
+      echo "Changed files:"
+      echo "$CHANGED_FILES"
+
+      # Extract unique "<env>/charts/<service>" dirs
+      CHANGED_CHARTS=$(echo "$CHANGED_FILES" \
+        | grep -E '^(dev|sit|uat|int|perf|pre-prod|pre-prod-dc|prod-dr|prod-dc)/charts/[^/]+' \
+        | sed -E 's|^(dev|sit|uat|int|perf|pre-prod|pre-prod-dc|prod-dr|prod-dc)/charts/([^/]+).*|\1/\2|' \
+        | sort -u || true)
+
+      if [ -z "$CHANGED_CHARTS" ]; then
+        echo "No Helm chart directory changes detected."
+        echo "NO_CHARTS_CHANGED=1" > changed_charts.env
+        # still succeed so pipeline is green
+        exit 0
+      fi
+
+      echo "Detected changed chart dirs:"
+      echo "$CHANGED_CHARTS" | tee changed_charts.txt
+
+      echo "NO_CHARTS_CHANGED=0" > changed_charts.env
+
+  artifacts:
+    reports:
+      dotenv: changed_charts.env
+    paths:
+      - changed_charts.txt
+    expire_in: 2h
+
+  rules:
+    # Run when any env/charts tree changes
+    - changes:
+        - "dev/charts/**/*"
+        - "sit/charts/**/*"
+        - "uat/charts/**/*"
+        - "int/charts/**/*"
+        - "perf/charts/**/*"
+        - "pre-prod/charts/**/*"
+        - "pre-prod-dc/charts/**/*"
+        - "prod-dr/charts/**/*"
+        - "prod-dc/charts/**/*"
+      when: on_success
+    # Optional manual run
+    - when: manual
+
+# ---------------------------------------------------
+# 2) Generate child config: one trigger job per service
+# ---------------------------------------------------
+generate_dynamic_pipeline:
+  stage: generate
+  image: alpine:latest
+  needs:
+    - job: detect_changed_charts
+      artifacts: true
+  script:
+    - apk add --no-cache bash
+    - |
+      set -eo pipefail
+
+      source changed_charts.env || true
+
+      if [ "${NO_CHARTS_CHANGED:-0}" = "1" ] || [ ! -s changed_charts.txt ]; then
+        echo "No charts changed → creating empty child pipeline."
+        cat > dynamic-child.yml <<EOF
+stages:
+  - deploy
+
+# No services to deploy
+EOF
+        exit 0
+      fi
+
+      echo "Generating dynamic-child.yml from changed_charts.txt..."
+      cat > dynamic-child.yml <<EOF
+stages:
+  - deploy
+
+EOF
+
+      while read -r chart_path; do
+        [ -z "$chart_path" ] && continue
+
+        env=\$(echo "\$chart_path" | cut -d'/' -f1)
+        svc=\$(echo "\$chart_path" | cut -d'/' -f3)
+        job_name="deploy__\${env}__\${svc}"
+
+        cat >> dynamic-child.yml <<EOF
+\${job_name}:
+  stage: deploy
+  trigger:
+    include:
+      - project: 'epay/devops/ci-templates'
+        ref: main
+        file: 'cd/helm/helmv2.yml'
+    strategy: depend
+  variables:
+    ENV: "\${env}"
+    SERVICE_NAME: "\${svc}"
+
+EOF
+      done < changed_charts.txt
+
+      echo "Generated dynamic-child.yml:"
+      cat dynamic-child.yml
+  artifacts:
+    paths:
+      - dynamic-child.yml
+    expire_in: 2h
+
+# ---------------------------------------------------
+# 3) Trigger the matrix child pipeline
+# ---------------------------------------------------
+trigger_deployments:
+  stage: trigger
+  trigger:
+    include:
+      - artifact: dynamic-child.yml
+        job: generate_dynamic_pipeline
+    strategy: depend
+  needs:
+    - job: generate_dynamic_pipeline
+      artifacts: true
+  rules:
+    - when: on_success
