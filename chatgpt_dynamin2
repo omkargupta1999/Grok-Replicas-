@@ -1,6 +1,5 @@
 # cd/helm/helmv2-dynamic.yml
-# Wrapper: detect changed Helm charts and trigger parallel per-service
-# pipelines that use cd/helm/helmv2.yml
+# Detect changed Helm charts and trigger parallel deployments.
 
 variables:
   IMAGE_REGISTRY: "registry.dev.sbiepay.sbi:8443"
@@ -12,8 +11,12 @@ variables:
     name: ${IMAGE_REGISTRY}/library/rhelgit:latest
     entrypoint: [""]
 
+stages:
+  - validate
+  - deploy
+
 # ---------------------------------------------------
-# 1) Detect changed Helm chart directories
+# 1) Detect changed Helm charts
 # ---------------------------------------------------
 detect_changed_charts:
   stage: validate
@@ -23,76 +26,45 @@ detect_changed_charts:
     - |
       set -eo pipefail
 
-      REPO_ROOT=$(pwd)
-      echo "Repository root: $REPO_ROOT"
-
       git config --global http.sslVerify false
       git config --global --add safe.directory '*'
       git config --global user.name "ci"
       git config --global user.email "ci.cedge@sbi.co.in"
 
-      echo "CI_COMMIT_SHA        = $CI_COMMIT_SHA"
-      echo "CI_COMMIT_BEFORE_SHA = $CI_COMMIT_BEFORE_SHA"
-
-      # Determine changed files between previous and current commit
+      # Determine changed files
       if [ -n "$CI_COMMIT_BEFORE_SHA" ] && \
          [ "$CI_COMMIT_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
         CHANGED_FILES=$(git diff --name-only "$CI_COMMIT_BEFORE_SHA" "$CI_COMMIT_SHA")
       else
-        # Fallback for first commit / missing BEFORE_SHA
         CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD || git ls-files)
       fi
 
-      echo "Changed files:"
-      echo "$CHANGED_FILES"
+      echo "$CHANGED_FILES" > changed_files.txt
 
-      # Extract unique "<env>/charts/<service>" dirs, then reduce to "env/service"
-      # Example input:
-      #   dev/charts/epay_transaction_service/values.yaml
-      # Example output line:
-      #   dev/epay_transaction_service
-      CHANGED_CHARTS=$(echo "$CHANGED_FILES" \
-        | grep -E '^(dev|sit|uat|int|perf|pre-prod|pre-prod-dc|prod-dr|prod-dc)/charts/[^/]+' \
-        | sed -E 's|^(dev|sit|uat|int|perf|pre-prod|pre-prod-dc|prod-dr|prod-dc)/charts/([^/]+).*|\1/\2|' \
+      CHART_LINES=$(grep -E '^(dev|sit|uat|int|perf|pre-prod|pre-prod-dc|prod-dr|prod-dc)/charts/[^/]+' changed_files.txt \
+        | sed -E 's|(.*)/charts/([^/]+)/.*|\1/\2|' \
         | sort -u || true)
 
-      if [ -z "$CHANGED_CHARTS" ]; then
-        echo "No Helm chart directory changes detected."
+      if [ -z "$CHART_LINES" ]; then
         echo "NO_CHARTS_CHANGED=1" > changed_charts.env
-        # still succeed so pipeline is green
-        exit 0
+      else
+        echo "$CHART_LINES" > changed_charts.txt
+        echo "NO_CHARTS_CHANGED=0" > changed_charts.env
       fi
-
-      echo "Detected changed chart dirs (env/service):"
-      echo "$CHANGED_CHARTS" | tee changed_charts.txt
-
-      echo "NO_CHARTS_CHANGED=0" > changed_charts.env
-
   artifacts:
     reports:
       dotenv: changed_charts.env
     paths:
       - changed_charts.txt
-    expire_in: 2h
-
+    expire_in: 1h
   rules:
-    # Run automatically whenever any Helm chart files change
     - changes:
-        - "dev/charts/**/*"
-        - "sit/charts/**/*"
-        - "uat/charts/**/*"
-        - "int/charts/**/*"
-        - "perf/charts/**/*"
-        - "pre-prod/charts/**/*"
-        - "pre-prod-dc/charts/**/*"
-        - "prod-dr/charts/**/*"
-        - "prod-dc/charts/**/*"
+        - "**/charts/**/*"
       when: on_success
-    # Optional manual run
     - when: manual
 
 # ---------------------------------------------------
-# 2) Generate child pipeline config with one job per service
+# 2) Generate child pipeline YAML
 # ---------------------------------------------------
 generate_dynamic_pipeline:
   stage: validate
@@ -100,73 +72,49 @@ generate_dynamic_pipeline:
     name: ${IMAGE_REGISTRY}/ubi9/ochelm:03122024
     entrypoint: [""]
   needs:
-    - job: detect_changed_charts
-      artifacts: true
+    - detect_changed_charts
   script:
     - |
       set -eo pipefail
 
-      if [ -f changed_charts.env ]; then
-        . changed_charts.env
-      fi
+      . changed_charts.env
 
-      # If no charts changed, create a harmless empty child pipeline
-      if [ "${NO_CHARTS_CHANGED:-0}" = "1" ] || [ ! -s changed_charts.txt ]; then
-        echo "No charts changed → creating empty child pipeline."
-        echo "stages:"           >  dynamic-child.yml
-        echo "  - deploy"        >> dynamic-child.yml
-        echo ""                  >> dynamic-child.yml
-        echo "# No services to deploy for this commit" >> dynamic-child.yml
+      # Case: No changes → create minimal valid child pipeline
+      if [ "$NO_CHARTS_CHANGED" = "1" ] || [ ! -s changed_charts.txt ]; then
+        printf "stages:\n  - deploy\n\nnoop:\n  stage: deploy\n  script:\n    - echo 'No chart changes detected'\n" \
+          > dynamic-child.yml
         exit 0
       fi
 
-      echo "Generating dynamic-child.yml from changed_charts.txt..."
+      # Case: Changes exist → build matrix-based child pipeline
+      printf "stages:\n  - deploy\n\n" > dynamic-child.yml
 
-      # Start child pipeline with one stage: deploy
-      echo "stages:"     >  dynamic-child.yml
-      echo "  - deploy"  >> dynamic-child.yml
-      echo ""            >> dynamic-child.yml
+      while read -r line; do
+        env=$(echo "$line" | cut -d'/' -f1)
+        svc=$(echo "$line" | cut -d'/' -f2)
 
-      # Each line in changed_charts.txt is: env/service
-      # Example: dev/epay_transaction_service
-      while read -r chart_path; do
-        [ -z "$chart_path" ] && continue
-
-        env=$(echo "$chart_path" | cut -d'/' -f1)
-        svc=$(echo "$chart_path" | cut -d'/' -f2)
-
-        job_name="deploy__${env}__${svc}"
-
-        {
-          echo "${job_name}:"
-          echo "  stage: deploy"
-          echo "  trigger:"
-          echo "    include:"
-          echo "      - project: 'epay/devops/ci-templates'"
-          echo "        ref: main"
-          echo "        file: 'cd/helm/helmv2.yml'"
-          echo "    strategy: depend"
-          echo "  variables:"
-          echo "    ENV: \"${env}\""
-          echo "    SERVICE_NAME: \"${svc}\""
-          echo ""
-        } >> dynamic-child.yml
-
+        printf "%s:\n" "deploy__${env}__${svc}" >> dynamic-child.yml
+        printf "  stage: deploy\n" >> dynamic-child.yml
+        printf "  trigger:\n" >> dynamic-child.yml
+        printf "    include:\n" >> dynamic-child.yml
+        printf "      - project: 'epay/devops/ci-templates'\n" >> dynamic-child.yml
+        printf "        ref: main\n" >> dynamic-child.yml
+        printf "        file: 'cd/helm/helmv2.yml'\n" >> dynamic-child.yml
+        printf "    strategy: depend\n" >> dynamic-child.yml
+        printf "  variables:\n" >> dynamic-child.yml
+        printf "    ENV: \"%s\"\n" "$env" >> dynamic-child.yml
+        printf "    SERVICE_NAME: \"%s\"\n\n" "$svc" >> dynamic-child.yml
       done < changed_charts.txt
 
       echo "Generated dynamic-child.yml:"
       cat dynamic-child.yml
-
   artifacts:
     paths:
       - dynamic-child.yml
-    expire_in: 2h
-
-  rules:
-    - when: on_success
+    expire_in: 1h
 
 # ---------------------------------------------------
-# 3) Trigger the child pipeline (matrix of per-service deploys)
+# 3) Trigger child pipeline with all deployments
 # ---------------------------------------------------
 trigger_deployments:
   stage: deploy
@@ -176,91 +124,6 @@ trigger_deployments:
         job: generate_dynamic_pipeline
     strategy: depend
   needs:
-    - job: generate_dynamic_pipeline
-      artifacts: true
-  rules:
-    - when: on_success
-
-
-
-
-
-
-
-
-
-===============================
-
-
-generate_dynamic_pipeline:
-  stage: validate
-  image:
-    name: ${IMAGE_REGISTRY}/ubi9/ochelm:03122024
-    entrypoint: [""]
-  needs:
-    - job: detect_changed_charts
-      artifacts: true
-  script:
-    - |
-      set -eo pipefail
-
-      if [ -f changed_charts.env ]; then
-        . changed_charts.env
-      fi
-
-      # Case 1: No changed charts → generate minimal valid child pipeline
-      if [ "${NO_CHARTS_CHANGED:-0}" = "1" ] || [ ! -s changed_charts.txt ]; then
-        echo "No charts changed → creating minimal child pipeline with noop job."
-
-        cat > dynamic-child.yml <<EOF
-stages:
-  - deploy
-
-noop:
-  stage: deploy
-  script:
-    - echo "No services changed — skipping deployment"
-EOF
-        exit 0
-      fi
-
-      # Case 2: Services changed → create proper matrix
-      echo "Generating dynamic-child.yml from changed_charts.txt..."
-
-      echo "stages:"     >  dynamic-child.yml
-      echo "  - deploy"  >> dynamic-child.yml
-      echo ""            >> dynamic-child.yml
-
-      while read -r chart_path; do
-        [ -z "$chart_path" ] && continue
-
-        env=$(echo "$chart_path" | cut -d'/' -f1)
-        svc=$(echo "$chart_path" | cut -d'/' -f2)
-        job_name="deploy__${env}__${svc}"
-
-        {
-          echo "${job_name}:"
-          echo "  stage: deploy"
-          echo "  trigger:"
-          echo "    include:"
-          echo "      - project: 'epay/devops/ci-templates'"
-          echo "        ref: main"
-          echo "        file: 'cd/helm/helmv2.yml'"
-          echo "    strategy: depend"
-          echo "  variables:"
-          echo "    ENV: \"${env}\""
-          echo "    SERVICE_NAME: \"${svc}\""
-          echo ""
-        } >> dynamic-child.yml
-
-      done < changed_charts.txt
-
-      echo "Generated dynamic-child.yml:"
-      cat dynamic-child.yml
-
-  artifacts:
-    paths:
-      - dynamic-child.yml
-    expire_in: 2h
+    - generate_dynamic_pipeline
   rules:
     - when: on_success
