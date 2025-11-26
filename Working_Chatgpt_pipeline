@@ -9,7 +9,7 @@ include:
   #   file: 'cd/helm/helm.yml'   
   - project: 'epay/devops/ci-templates'
     ref: main
-    file: 'cd/helm/helmv2.yml'   
+    file: 'cd/helm/helmv2-dynamic.yml'   
     
 workflow:
   rules:
