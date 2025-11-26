@@ -1,3 +1,27 @@
+        # Try to get changed files manually if CI_COMMIT_CHANGED_FILES is empty
+        if [ -z "$CI_COMMIT_CHANGED_FILES" ]; then
+          echo "Debug: CI_COMMIT_CHANGED_FILES is empty, trying to get changed files manually..."
+
+          # Normal case: both SHAs present and BEFORE_SHA is not the all-zero sentinel
+          if [ -n "$CI_COMMIT_SHA" ] && [ -n "$CI_COMMIT_BEFORE_SHA" ] && \
+             [ "$CI_COMMIT_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            CI_COMMIT_CHANGED_FILES=$(git diff --name-only "$CI_COMMIT_BEFORE_SHA" "$CI_COMMIT_SHA" || true)
+            echo "Debug: Manually detected changed files between $CI_COMMIT_BEFORE_SHA and $CI_COMMIT_SHA:"
+            echo "$CI_COMMIT_CHANGED_FILES"
+          else
+            # Fallback for first commit / missing BEFORE_SHA / all-zero BEFORE_SHA
+            echo "Debug: BEFORE_SHA is empty or all zeros, using git show on current commit"
+            CI_COMMIT_CHANGED_FILES=$(git show --pretty="" --name-only "$CI_COMMIT_SHA" 2>/dev/null || true)
+            echo "Debug: Fallback detected files:"
+            echo "$CI_COMMIT_CHANGED_FILES"
+          fi
+        fi
+
+
+
+
+
+=================================================
 # cd/helm/helmv2-dynamic.yml
 # Detect changed Helm charts and trigger parallel deployments (child pipelines)
 
