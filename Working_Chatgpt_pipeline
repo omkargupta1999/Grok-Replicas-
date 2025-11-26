@@ -1,4 +1,45 @@
+########  .gitlab-ci.yml
 
+include:
+  - project: 'epay/devops/ci-templates'
+    ref: main
+    file: 'cd/commit/commit.yml'      
+  # - project: 'epay/devops/ci-templates'
+  #   ref: main
+  #   file: 'cd/helm/helm.yml'   
+  - project: 'epay/devops/ci-templates'
+    ref: main
+    file: 'cd/helm/helmv2.yml'   
+    
+workflow:
+  rules:
+    # Skip pipeline for CI-triggered commits
+    - if: $CI_COMMIT_AUTHOR == "ci" && $CI_COMMIT_AUTHOR_EMAIL == "ci.cedge@sbi.co.in"
+      when: never
+
+    # Default rule
+    - when: always 
+
+stages:
+  - commit
+  - validate
+  - deploy
+  - verify
+  
+#
+update-tag:
+  extends:
+    - .update-tag
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "pipeline"
+
+# helm-deploy:
+#   extends:
+#     - .helm_update
+#     - .helm_update
+
+
+========================================================================== 
 
 # cd/helm/helmv2-dynamic.yml
 # Detect changed Helm charts OR pipeline-triggered services, and trigger
