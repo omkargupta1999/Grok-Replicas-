@@ -1,0 +1,3 @@
+Pls help us to setup CICD for new service (Integration service)
+This service will be used for integration between merchants and our transaction service,. merchant will be calling integration service endpoint which will interact with txn service so txn service will be protected privately. addtionally integration service will be used for custom merchant for mapping, custom enryption, decryption purpose before hitting our main txn service.
+ENV: DEV/SIT 
