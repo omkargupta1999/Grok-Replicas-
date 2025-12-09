@@ -1,0 +1,220 @@
+Nice — thanks for the dashboard JSON. I looked through it (the file you uploaded). 
+
+Below I’ll give a focused troubleshooting checklist (fast), the **most likely causes** for “No data”, exact **tests/commands** to run, and **concrete fixes** you can apply immediately (including example edits to the dashboard queries). I won’t ask more questions — I’ll make best-effort fixes you can try now.
+
+---
+
+# Quick diagnostic checklist (do these in order)
+
+1. Confirm Grafana is actually talking to a working Prometheus:
+
+   * In Grafana → **Configuration → Data sources → Prometheus-Default** → click **Save & test**.
+   * If that fails, Grafana panels will show “No data”. Fix DS URL/auth first.
+
+2. Check Prometheus targets (are loki/node exporters scraped?):
+
+   * Open Prometheus UI `http://<prometheus_host>:9090/targets` and verify target(s) for your loki components and node_exporter are UP and not `DOWN` or `UNKNOWN`.
+
+3. Verify Prometheus actually has metrics used by panels:
+
+   * In Prometheus UI → **Graph** query `up` or the specific metric used by a panel (see examples below).
+   * If Prometheus returns no time series for those queries, Grafana will show “No data”.
+
+4. Confirm the dashboard’s PromQL label filters match what Prometheus stores:
+
+   * The dashboard uses `instance=~".*:9100.*"` in many panels. If your loki metrics are scraped on a different port (e.g. 3100, 9095, 9080) or different instance label format, the regex will filter everything out.
+
+5. Time range and refresh:
+
+   * Ensure Grafana time range is not set to something empty. (Top-right time selector: use `now-1h` → `now`).
+   * The dashboard already sets `refresh: 5s` and `time.from: now-1h` in the file — ok, but confirm Grafana UI hasn't been overridden.
+
+---
+
+# Most likely root causes (based on your JSON)
+
+From the JSON you uploaded I see panels use expressions like:
+
+* `up{job=~"loki.*", instance=~".*:9100.*"}`
+* `loki_distributor_received_bytes_total{instance=~".*:9100.*"}`
+* `loki_query_frontend_queries_total{instance=~".*:9100.*"}`
+
+So the likely problems:
+
+1. **Wrong `instance` regex/port** — many panels require `:9100` in `instance`. That looks like a node_exporter port, not Loki. If your Loki components expose metrics on a different port (commonly 3100 or 9095), the panels will always filter to nothing.
+2. **Wrong label names (job/instance)** — your Prometheus scrape job labels may be different (e.g. `job="loki-distributor"`, or `instance` may be an IP without port). The dashboard assumes `job` and `instance` shapes that might not match.
+3. **Prometheus isn’t scraping the loki exporters** — either missing scrape_config or targets are down.
+4. **Datasource name mismatch** — the dashboard uses `Prometheus-Default` as datasource; Grafana may have your Prometheus named differently.
+
+---
+
+# Concrete checks & commands to run now
+
+1. From machine where you can reach Prometheus:
+
+* List all current targets & check status:
+
+```bash
+# Replace PROM_HOST with your prometheus host:port (e.g. 10.0.0.5:9090)
+curl -s 'http://PROM_HOST/api/v1/targets?state=active' | jq '.data.activeTargets[] | {labels:.labels, discoveredLabels:.discoveredLabels, scrapeUrl:.scrapeUrl, lastScrape:.lastScrape}'
+```
+
+Look for loki-related jobs and for `node_exporter`/ports.
+
+2. Try these quick Prometheus queries (open Prometheus UI or use HTTP API):
+
+```text
+# Basic up
+up
+
+# Check any loki metrics exist:
+loki_distributor_received_bytes_total
+
+# Show series with loki in job label (list examples):
+series{job=~".*loki.*"}  # in Prometheus UI: /series?match[]=series{job=~".*loki.*"}
+```
+
+3. Curl a metrics endpoint on a node that *should* serve Loki metrics (example ports to try):
+
+```bash
+# Try port 3100 (loki default HTTP)
+curl -s http://<node_ip>:3100/metrics | head -n 40
+
+# Try port 9095 or 9080 if you configured a metrics port
+curl -s http://<node_ip>:9095/metrics | head -n 40
+
+# Try node_exporter port 9100 (node metrics)
+curl -s http://<node_ip>:9100/metrics | head -n 10
+```
+
+If you get metric lines, note the host:port and labels — that tells you what your dashboard filters should match.
+
+4. From Grafana (UI):
+
+* Open any panel → **Inspect → Query** → see the exact query Grafana sent. Copy it and run it in Prometheus UI to see raw response.
+
+---
+
+# Quick, safe edits you can apply to the dashboard JSON (3 options)
+
+If you want immediate visibility in Grafana, edit the dashboard queries to be **less restrictive** while you debug.
+
+**A. Remove the `instance` regex filter** — will match any instance with the metric:
+Original (example):
+
+```promql
+rate(loki_distributor_received_bytes_total{instance=~".*:9100.*"}[5m])
+```
+
+Change to:
+
+```promql
+rate(loki_distributor_received_bytes_total[5m])
+```
+
+or, if you want to keep job filter only:
+
+```promql
+rate(loki_distributor_received_bytes_total{job=~"loki.*"}[5m])
+```
+
+**B. Replace `:9100` with common Loki metric ports to try** (try one at a time):
+
+```promql
+rate(loki_distributor_received_bytes_total{instance=~".*:3100.*"}[5m])
+```
+
+or
+
+```promql
+rate(loki_distributor_received_bytes_total{instance=~".*:9095.*"}[5m])
+```
+
+**C. Use `up` to identify the job/instance labels, then adapt queries**:
+Panel example for status card:
+Original:
+
+```promql
+up{job=~"loki.*", instance=~".*:9100.*"}
+```
+
+Temporarily set to:
+
+```promql
+up{job=~"loki.*"}
+```
+
+or just:
+
+```promql
+up
+```
+
+This will show if Prometheus sees any scrape targets at all.
+
+> Tip: After changes, reload the dashboard in Grafana. If panels now show data, progressively narrow filters to the correct labels.
+
+---
+
+# Example edits applied to several panels (copy/paste)
+
+Use these replacements for the targets in your JSON to quickly check:
+
+1. Node1 Services Status (stat)
+
+```promql
+# replace expr with:
+up{job=~"loki.*"}
+```
+
+2. Ingestion rate timeseries
+
+```promql
+# replace expr with:
+rate(loki_distributor_received_bytes_total[5m])
+```
+
+3. Query rate timeseries
+
+```promql
+rate(loki_query_frontend_queries_total[5m])
+rate(loki_querier_queries_total[5m])
+```
+
+4. Request latency (keep histogram but remove instance)
+
+```promql
+histogram_quantile(0.95, rate(loki_request_duration_seconds_bucket[5m]))
+```
+
+Applying the above will rapidly show if metrics exist (then we can tighten selectors).
+
+---
+
+# If Prometheus is not scraping Loki — what to check in Prometheus config
+
+* `scrape_configs` must include jobs for your loki components (distributor, ingester, querier, query-frontend, etc.) or node_exporter.
+* Ensure `static_configs` or `kubernetes_sd_configs` include the right targets/IPs and ports.
+* Look at relabeling — sometimes `instance` is relabeled to IP:port or to just hostnames; be sure your dashboard filters match the actual label values.
+
+---
+
+# If you want, I can do the following *right now* (pick from these and I’ll apply):
+
+* Show an edited version of your JSON with all `instance=~".*:9100.*"` removed (so panels are less restrictive) — you can import that into Grafana and test.
+* Or produce a second JSON where the dashboard uses a datasource named `${DS_PROM}` (Grafana variable) to avoid datasource-name mismatch.
+
+(If you want me to produce the JSON edit, tell me “remove instance filters” and I’ll output the modified JSON here.)
+
+---
+
+# Short summary of next steps (recommended)
+
+1. Test Prometheus connectivity from Grafana (Data source test).
+2. In Prometheus UI check `targets` and run `series`/`query` for the metrics in your panels.
+3. Temporarily remove `instance` filters in the dashboard JSON or change to the actual port you discovered (3100/9095/9100).
+4. Once panels show data, narrow the PromQL selectors to be precise.
+
+---
+
+If you want, I’ll immediately produce the **modified dashboard JSON** with `instance` filters removed (or changed to `:3100`) and return it here so you can import and test. Which edit do you want me to apply?
