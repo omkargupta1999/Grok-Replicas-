@@ -1,0 +1,124 @@
+01Session 1: Getting Started With Red Hat Linux
+Understand the Linux distro and RHEL.
+Manage Files, Users, Groups, and Permissions.
+Install and manage software (yum/dnf).
+02Session 2: Red Hat Linux Essentials
+Manage and control Background Services
+Configure and troubleshoot Linux Networking.
+Understand advanced File Permissions.
+03Session 3: Shell Scripting
+Shell Scripting Basics
+Add logic with Control Flow
+Basics of User & Group Management
+Project: Build a Complete Automation project for user and group management with logs.
+04Session 4: Shell Scripting: Filesystems & Performance Monitoring
+Automate Filesystem tasks
+Create a System Metrics Script with Alerts
+Project: Make a project that combines filesystem automation and system performance reporting.
+05Session 5: AWS Global Infrastructure & EC2
+Understand the Global AWS Structure.
+Introduction of EC2
+Launch your first EC2 instance.
+06Session 6: Instance Configuration & Connectivity
+Understand AWS Connectivity.
+Advanced EC2 options.
+Prepare AI-ready compute (Golden AMIs and AWS Systems Manager).
+Build and test a secure baseline EC2 setup.
+07Session 7: Advanced AWS Services
+Understand AWS Network Security Layers.
+Elastic Load Balancing and Auto Scaling.
+Amazon S3 fundamentals
+Store and serve datasets or ML models
+08Session 8: CloudFormation, CloudWatch & Serverless
+Learn Infrastructure as Code (IaC)
+Overview of RDS and IAM.
+Understand SNS and SQS.
+AWS Lambda and API Gateway.
+AI Project: Implement AI-ready observability patterns using CloudFormation, CloudWatch, and SNS/SQS.
+09Session 9: Mastering Git
+Distributed and Centralized Version Control.
+Git Three-Stage Architecture
+Learn to manage AI assets
+10Session 10: Advanced Git & GitHub
+Initialize and push your infra & automation repos
+GitHub auth, PR workflows, and code review etiquette.
+Advanced Git commands
+MLOps Collaboration Workflows
+GitHub Copilot for automating commit messages, PR reviews, and generating initial CI/CD workflow YAMLs.
+11Session 11: Networking Fundamentals
+Learn IP addressing, subnetting, and CIDR
+Understand system communication.
+DNS fundamentals.
+Design a VPC subnet plan and visualize routing paths
+12Session 12: Conceptual Concepts of Dockers
+Understand Virtualization vs. Containerization.
+Docker Architecture.
+Docker images and lifecycle
+Project: Containerize an inference service using FastAPI or TorchServe
+13Session 13: Docker: Images, Networking, Volumes & CI/CD
+Understand Docker Networking Modes
+Explore container security and compliance
+Implement CI/CD pipelines
+Project: Document image usage and operational procedures.
+14Session 14: SonarQube, Quality Gates, and Profiles
+Code Quality in Operations.
+Set up SonarQube
+Enforce Quality Gates
+15Session 15: CI/CD Workflow with Jenkins
+Understand CI/CD fundamentals.
+Explore Jenkinsfile syntax
+Understanding Artifact Versioning and Management
+Apply CI/CD to an ML workflow
+Use GitHub Copilot to scaffold Jenkinsfiles.
+16Session 16: Advanced Jenkins & GitLab Integration
+Understand Jenkins agents and Executors
+Controller-Agent models and Dynamic Agent
+Identify key Jenkins plugins( Docker, Git, Maven,)
+GitLab CI/CD concepts
+Implement an advanced multi-stage ML pipeline.
+Explore Jenkins AI plugins
+Project: Set up a GitHub Actions self-hosted runner and trigger it through Jenkins for hybrid automation
+17Session 17: Kubernetes Introduction
+Understand Container Orchestration
+Learn Kubernetes Architecture components
+Use kubectl and minikube.
+Deploy your first pod and service
+Overview of Azure DevOps
+18Session 18: Kubernetes Basics
+Kubernetes workloads with Deployments
+Understand labels, selectors, rollouts, rollbacks, and probes
+Explore multi-container pod patterns.
+Basics of KServe and Seldon
+Perform a blue/green rollout.
+19Session 19: Deploying Applications on Kubernetes
+Understand EKS 
+Minikube vs. EKS
+Configure Node Groups and IRSA
+Build a Kubernetes Resilience with HPA & Rollout Strategies.
+Project: Deploy a complete microservice application to your EKS cluster with health checks and persistent volumes
+20Session 20: Advanced Kubernetes Topics
+RBAC and Service Accounts control permissions
+Understand Ingress concepts
+Package and deploy complex applications (Helm charts)
+Fundamentals of Service Mesh (Istio).
+Project: Deploy a TLS-secured EKS application using Nginx Ingress and Cert-Manager, and analyze monolith vs. microservices tradeoffs
+21Session 21: Getting Started with Ansible
+Ansible for Configuration Management
+Ansible Architecture
+Ansible Automation with Roles, Collections, Vars & Facts
+22Session 22: Automation with Ansible Playbooks
+Organize playbooks with tags.
+Jinja2 templating
+Secure secrets with Ansible Vault
+Project: Automate a multi-node Kubernetes cluster setup using repeatable, idempotent playbooks.
+23Session 23: Terraform: Introduction & State
+Understand IaC principles
+Terraform Basics
+Understanding provider Authentication methods.
+Design and provision a VPC architecture with subnets, route tables, and gateways.
+24Session 24: Terraform Advanced + Grafana & Prometheus
+Advanced Terraform concepts
+Understand Networking with CIDR /16
+Configure drift alerts and FinOps monitoring
+Set up and integrate Grafana, Prometheus, and MySQL
+AI Project: Build observability dashboards for ML models - tracking latency, accuracy, and error rates.
